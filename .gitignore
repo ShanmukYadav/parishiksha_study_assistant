@@ -1,0 +1,21 @@
+cat > .gitignore << 'EOF'
+# PDFs - do not commit per project instructions
+data/raw/*.pdf
+data/raw/*.PDF
+
+# Environment
+venv/
+__pycache__/
+*.pyc
+.env
+
+# API keys
+*.env
+.env*
+
+# Jupyter checkpoints
+.ipynb_checkpoints/
+
+# OS
+.DS_Store
+EOF
