@@ -19,8 +19,8 @@ Open `notebook.ipynb` in Jupyter and run all cells top to bottom.
 ## Data
 
 PDFs are NOT committed. Download from:
-- Ch 8: https://ncert.nic.in/textbook/pdf/iesc108.pdf
-- Ch 9: https://ncert.nic.in/textbook/pdf/iesc109.pdf
+- motion around us: https://ncert.nic.in/textbook/pdf/iesc104.pdf
+- How forces effect motion: https://ncert.nic.in/textbook/pdf/iesc106.pdf
 
 Place in `data/raw/`.
 
