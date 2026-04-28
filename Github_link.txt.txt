@@ -1,0 +1,5 @@
+Teammates
+Shanmuk kukati
+Ankit Prashar
+
+Github_link: https://github.com/ShanmukYadav/parishiksha_study_assistant.git
