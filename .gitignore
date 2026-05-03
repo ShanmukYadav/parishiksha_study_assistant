@@ -18,4 +18,13 @@ __pycache__/
 
 # OS
 .DS_Store
+
+.env
+chroma_wk10/
+data/raw/
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+venv/
+
 EOF
