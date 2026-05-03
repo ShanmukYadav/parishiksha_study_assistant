@@ -1,283 +1,202 @@
-<<<<<<< Updated upstream
-# Reflection Questionnaire — PariShiksha Study Assistant
-## Week 9 Mini-Project | PG Diploma AI-ML & Agentic AI Engineering
+# Reflection Questionnaire — Wk10 Study Assistant v2.0
+
+## Part A — Implementation specifics
+
+### A1. Chunking decisions, with evidence
+
+**Parameters:** chunk_size=250 tokens (tiktoken cl100k_base), overlap=50 tokens,
+content_type via regex: `example \d+[.:]` → worked_example, `activity \d+[.:]`
+→ activity, `revise, reflect|pause and ponder` → end_of_chapter, else → concept.
+
+**Three chunks:**
+- wk10_0063 | worked_example — page contained "Example 6.3:" triggering the regex;
+  kept whole so the cricket-ball problem and its answer stay in one chunk.
+- wk10_0026 | concept — kinematic section page, no example/activity markers;
+  split at 250-token boundary mid-derivation.
+- wk10_0008 | concept — average acceleration definition page; classified correctly,
+  single page fit under token limit so kept whole.
+
+### A2. The chunk that surprised me
+
+wk10_0034 — classified as concept, 31 words:
+"is a straight line indicating that the velocity changes with constant acceleration.
+The slope of the graph gives the acceleration. Grade 8 Ganita Prakash..."
+Expected: filtered out as noise at index time.
+Got: passed the >30 word filter and entered the BM25 index, polluting retrieval
+for kinematic queries. The heuristic caught genuine short fragments elsewhere but
+missed this one because it technically contains physics vocabulary.
+
+### A3. Loader choice
+
+Stayed on PyMuPDF from Wk9. Tested by searching wk10_chunks.json for table-containing
+pages in Chapter 6. The Newton's law examples were extracted as continuous prose —
+no mid-row splits observed on these two chapters. Tables with numeric columns (e.g.,
+velocity-time data) did flatten, but none of those were retrieval targets in my eval
+set. OpenDataLoader-PDF would matter if the eval included table-specific queries.
 
 ---
 
-## Part A — Implementation Artifacts
+## Part B — Numbers from your evaluation
 
-### A1. Chunking Parameters
+### B1. Eval scores, raw
 
-**Final parameters:**
-- Chunk size: 300 tokens (approx 225 words)
-- Overlap: 50 tokens
-- Special handling: worked_examples kept whole, end_of_chapter split on question numbers, concept/activity use sliding window
+Out of 9 answered questions (excluding OOS):
+- Correct: 8/9
+- Partial: 1/9
+- Grounded: 9/9
+- OOS refused: 3/3
 
-**What pushed me to these values:**
-I first tried pure fixed-size chunking at 500 tokens with no overlap. When testing retrieval for "What is Newton's second law?", the retrieved chunk contained both the second and third law on the same page, diluting the answer. Reducing to 300 tokens with 50 overlap kept individual concepts together while maintaining enough context. The most important decision was keeping worked_examples whole — Example 4.3 (bus acceleration) had its problem statement and solution on the same page. Splitting them would have caused the LLM to receive only the problem without the solution, producing a wrong answer.
+The number that bothered me most: 1 partial (Q7). Not because of the score but
+because diagnosing it revealed a corpus gap — the F = Δp/Δt reasoning for the
+fielder example does not exist in Chapter 4 or 6 as a retrievable chunk. The
+system gave the best answer it could from what it had. That is a content problem,
+not an engineering problem, and those are harder to fix.
 
----
+### B2. The single worst question
 
-### A2. A Retrieved Chunk That Was Wrong
+**Question:** "Why does a fielder pull hands back while catching a fast cricket ball?"
 
-**Query:** "What is displacement and how is it different from distance?"
+**System answer:** "A fielder pulls their hands back while catching a fast cricket
+ball to minimize the impact and injury to their hands, as applying a smaller force
+to the moving ball also minimises injury to the fielder [Source: wk10_0063]."
 
-**Wrong chunk retrieved (Rank 1):**
-> "by drawing a velocity-time graph for its motion. 15. Two cars A and B start moving with a constant acceleration from rest in a straight line..."
-> Section: 4.4 Motion in a Plane | Page 23
+**Top-3 retrieved:** wk10_0063, wk10_0062, wk10_0065
 
-**Why the retriever returned it:**
-The word "displacement" appears in end-of-chapter questions across multiple pages including page 23, which also contains distance-related numerical problems. BM25 matched on surface keyword frequency — "distance", "motion", "straight line" — without understanding that this chunk is an exercise page, not a definition page. The correct definition chunk (4.1.2) was ranked third because its text was shorter and had lower term frequency scores.
+**Failure mode:** mixed_structure — the worked_example chunk held the conclusion
+but the force-time mechanism (F = Δp/Δt) was absent from the corpus entirely.
+The model answered faithfully from incomplete source material.
 
----
+### B3. Before-and-after on fix
 
-### A3. Grounding Prompt — v1 and v_final
+Fix: junk filter — drop non-worked_example chunks under 50 words from retrieved
+context before passing to model.
 
-**v1 (first attempt):**
-You are a helpful science tutor. Answer the student's question using the provided context.
-Only use information from the context below.
-Context: {context}
-Question: {question}
+| Metric | v1 | v2 | Delta |
+|--------|----|----|-------|
+| Correct | 8/9 | 7/9 | -1 |
+| Grounded | 9/9 | 8/9 | -1 |
+| OOS refused | 3/3 | 3/3 | 0 |
 
-**v_final:**
-You are a science study assistant for Class 9 students using NCERT textbooks.
-You will be given CONTEXT extracted from NCERT Class 9 Science chapters.
-Your job is to answer the student's question STRICTLY using only the provided context.
-STRICT RULES:
-
-If the answer is present in the context, answer clearly and simply for a Class 9 student.
-If the answer is NOT in the context, respond with exactly: "I'm sorry, this topic is not covered..."
-Do NOT use any outside knowledge, even if you know the answer.
-Do NOT make up formulas, definitions, or examples not present in the context.
-Keep answers concise — 3 to 5 sentences maximum.
-If a formula is in the context, include it in your answer.
-
-**What caused the revision:**
-The v1 prompt used "only use information from the context" which is permissive — the model interpreted it as "prefer the context but supplement if needed." When testing Q18 (Newton's law of gravitation), v1 produced a full answer even though the gravitation chapter was not in our corpus. Changing to an explicit REFUSAL instruction with an exact response string fixed this — all 5 out-of-scope questions were correctly refused with v_final.
+The fix made things worse. Q1 regressed because the filter removed wk10_0015,
+a chunk that carried enough definitional signal for the model to answer
+"What is displacement?" correctly. Without it, the model over-refused.
+A negative delta is still a valid result — it tells me the filter threshold
+was wrong and the real fix for Q1 is a metadata-based section filter, not
+a word-count gate.
 
 ---
 
-## Part B — Numbers from Evaluation
+## Part C — Debugging stories
 
-### B1. Evaluation Scores
+### C1. The retrieved chunk that fooled me
 
-- Total questions: 18
-- Correct: 11/13 answered questions
-- Partial: 2/13 (Q01 wrong retrieval, Q02 incomplete equations)
-- Grounded: 13/13 — every answered question was supported by retrieved chunks
-- Refusals appropriate: 5/5
+**Query:** "What is displacement?"
+**Top-1:** wk10_0023 | similarity: 0.632
+**Chunk preview:** "Describing Motion Around Us 63 This is the displacement of
+the car from the origin in 6 seconds. You have found that the area enclosed by
+the velocity-time graph..."
 
-**Number that bothered me most: 2 partial scores on direct questions.**
-Q01 (displacement) and Q02 (kinematic equations) are the most basic questions in the corpus — they should have been easiest. Both failed due to retrieval, not generation. The LLM answered correctly from whatever context it received, but the retriever pulled the wrong chunks. This means a student asking the most fundamental question gets a worse answer than one asking a complex paraphrased question. That is backwards and indicates the retriever needs significant improvement.
+Ranked top-1 because "displacement" appears 4 times in a kinematic calculation
+context — high co-occurrence with the query term. But the chunk contains a
+worked calculation, not the definition. The definition lives in section 4.1.2
+but its embedding is diluted by surrounding prose about distance vs displacement
+comparisons, so it ranked 4th.
 
-### B2. Chunk Size Experiment
-Not completed in this submission due to time constraints. Planned: compare 250 vs 500 token chunks on the same 18-question eval set. Expected outcome: 500 token chunks would hurt precision (multiple concepts per chunk) while 250 token chunks might lose context on worked examples.
+### C2. The bug that took longest
 
-### B3. Model Family Comparison
-Not completed in this submission. Used Llama-3.1-8b-instant (decoder-only) via Groq as primary model. Planned comparison with flan-t5-small (encoder-decoder) noted for future work. Expected: flan-t5-small would struggle on multi-step reasoning questions due to its 77M parameter capacity limit.
+The chunk_id format mismatch. The dense retriever (Chroma) stored IDs as
+"wk10_0063" but the raw chunks list used integers (63). When I tried to look up
+a chunk by ID to diagnose a miss, `next((c for c in chunks if c["chunk_id"] == "wk10_0063"))`
+returned nothing. Took 20 minutes to realise the two systems had different ID
+formats because both worked fine independently — the bug only surfaced at the
+diagnosis step. Fix: always use the same ID format end-to-end; assign string IDs
+at chunk creation time, not at embedding time.
 
----
+### C3. The thing that still bothers me
 
-## Part C — Debugging Moments
-
-### C1. Most Frustrating Bug
-
-**Bug:** Gemini API kept returning truncated answers mid-sentence for Newton's law questions. The answer would stop at "the object" with no punctuation.
-
-**Time to fix:** ~45 minutes
-
-**What I tried first:** Rewrote the grounding prompt thinking the instruction length was causing issues. Made no difference.
-
-**Actual fix:** The `max_output_tokens` was set to 512 which was too low for detailed physics answers. Increasing to 1024 fixed it. The `finish_reason` was MAX_TOKENS not STOP — adding a warning check revealed this immediately.
-
-**Fastest path for someone hitting the same bug:** Always check `response.candidates[0].finish_reason.name` after generation. If it says MAX_TOKENS instead of STOP, double your token limit before touching anything else.
-
-### C2. What Still Bothers Me
-
-The retriever consistently fails on basic definitional queries. "What is displacement?" retrieves page 23 (exercise page) instead of page 3 (definition page). The word "displacement" appears 47 times across the corpus so BM25 cannot discriminate. This bothers me because a Class 9 student's first question is almost always a definition question — exactly the query type our system handles worst. Fixing this requires dense semantic retrieval (sentence-transformers) which is planned for the Advanced stage.
+Q1 — "What is displacement?" — refused in v2 and answered correctly but
+incompletely in v1. The definition chunk (section 4.1.2) exists but never
+ranks top-1 because the embedding model associates "displacement" more strongly
+with kinematic calculation contexts than with the definitional sentence. In Wk11
+I would add a content_type=definition chunk type for formally introduced terms,
+and filter retrieval to that type for "what is X" query patterns.
 
 ---
 
-## Part D — Architecture and Reasoning
+## Part D — Architecture and tradeoffs
 
-### D1. Why Not Just ChatGPT?
+### D1. Why hybrid retrieval (or why not)?
 
-When we tested Q18 — "Explain Newton's law of gravitation" — our system correctly refused because gravitation is not in our corpus. A raw ChatGPT call would have answered confidently from its training data. That sounds better, but it is not. PariShiksha's non-negotiable requirement is that answers stay grounded in NCERT content. A student who asks about gravitation should be told to refer to that chapter, not receive an answer that may use different notation or explanation level than their textbook. ChatGPT has no such constraint and would freely mix knowledge from multiple sources, making it impossible to verify whether the answer matches what the student's teacher will say.
+In my eval, Q9 — "What decides how far a car travels after brakes are applied?"
+— retrieved wk10_0027 correctly with dense (similarity 0.644). But Q2 —
+"What are the three kinematic equations of motion?" — dense returned the
+derivation chunk (wk10_0026) while BM25 returned chunk 33 (the intro) at rank 1.
+Neither was perfect. For exact-term queries like "v = u + at", BM25 would win
+trivially. For paraphrased queries like Q9, dense wins. A hybrid fusing both
+would handle both cases. At student scale the engineering cost is low. At
+50k queries/day the operational complexity of running two indices is real but
+justified by the recall gain.
 
-### D2. The GANs Reflection
+### D2. CRAG / Self-RAG
 
-GANs are the wrong tool for this problem because they are designed for generation without grounding. A GAN generator learns to produce plausible-looking outputs that fool a discriminator — it has no mechanism to constrain generation to a specific source document. For PariShiksha, the core requirement is the opposite: we need a system that refuses to generate anything not supported by NCERT text. GANs optimize for plausibility, not faithfulness. The deeper principle is that generative architecture choice must match the fidelity requirement of the problem. When the problem demands "generate only from this specific source and refuse otherwise," you need retrieval-augmented generation with explicit grounding constraints — not adversarial generation.
+CRAG would have helped Q1 — the retriever returned a high-similarity but
+wrong-type chunk (calculation instead of definition). A CRAG grader would
+score that chunk low on relevance and trigger a query rewrite toward
+"define displacement". For Q7 it would not have helped — the corpus gap
+means a rewrite still returns nothing better. CRAG is worth building when
+bad retrievals are common and rewritable. When the gap is in the source
+content, CRAG just burns extra tokens on a retry that fails the same way.
 
-### D3. Honest Pilot Readiness
+### D3. Honest pilot readiness
 
-**Honest answer: No, not Monday.**
-
-Three things I would fix first:
-
-1. **Retrieval quality** — 2 out of 13 answered questions failed due to retrieval pulling wrong chunks. A 15% retrieval failure rate means roughly 1 in 7 students gets a wrong or incomplete answer on basic questions. Dense retrieval using sentence-transformers must replace BM25 before any pilot.
-
-2. **Evaluation coverage** — My eval set has 18 questions, all written by me. Real students ask questions with spelling errors, Hindi-English code-switching, and half-remembered terms. At least 50 real student questions from the contract teacher are needed before launching.
-
-3. **No guardrails for adversarial input** — I tested clean out-of-scope questions but not prompt injection attempts or malformed inputs. A pilot with 100 students will surface these within the first day.
-
----
-
-## Part E — Effort and Self-Assessment
-
-### E1. Effort Rating
-
-**8/10**
-
-I am genuinely proud of the grounding prompt iteration — going from a permissive v1 that hallucinated on out-of-scope questions to a v_final that correctly refused all 5 out-of-scope queries. That required actually testing failure cases and tracing the root cause rather than assuming the prompt was fine.
-
-### E2. Gap Between Me and a Stronger Student
-
-A stronger student would have completed the dense retrieval comparison (Advanced stage). I planned to use sentence-transformers/all-MiniLM-L6-v2 alongside BM25 and compare scores on the same eval set. I did not complete it due to API rate limit issues consuming time that should have been spent on Advanced tasks. The rate limit problem was partly my fault — I did not read the free tier quotas before starting the evaluation loop.
-
-### E3. What Two More Days Would Change
-
-**First thing:** Replace BM25 with dense retrieval using sentence-transformers. This is the single highest-impact change — it would fix the retrieval failures on Q01 and Q02 and likely push correctness from 11/13 to 13/13.
-
-**Last thing:** Add teacher mode (Optional) — citations with page and section references on every answer. This is only valuable after the retrieval foundation is solid. Polishing output format before fixing retrieval would be the wrong priority order.
-=======
-# Reflection Questionnaire — PariShiksha Study Assistant
-## Week 9 Mini-Project | PG Diploma AI-ML & Agentic AI Engineering
+No. Three things I'd verify first:
+1. Q1 refusal in v2 — the displacement definition fails to retrieve reliably.
+   A student asking "what is displacement" getting "I don't have that" on a
+   chapter about motion is a trust-destroying failure.
+2. Chunk_id format consistency — the mismatch between raw chunks (int) and
+   Chroma (string wk10_XXXX) means citation debugging is broken in production.
+   This needs to be a single source of truth before any demo.
+3. The corpus covers only 2 chapters. The teacher tested 30 questions across
+   more content. Without expanding corpus coverage, out-of-scope refusals
+   will dominate and erode teacher confidence faster than wrong answers would.
 
 ---
 
-## Part A — Implementation Artifacts
+## Part E — Effort and self-assessment
 
-### A1. Chunking Parameters
+### E1. Effort rating
 
-**Final parameters:**
-- Chunk size: 300 tokens (approx 225 words)
-- Overlap: 50 tokens
-- Special handling: worked_examples kept whole, end_of_chapter split on question numbers, concept/activity use sliding window
+7/10. The debugging loop around chunk_id format and the Q7 corpus gap
+investigation consumed time I had planned for polishing the eval set.
+Genuinely proud of: writing the fix_memo honestly when the fix made
+things worse. It would have been easy to cherry-pick a question where
+the fix helped and call it done.
 
-**What pushed me to these values:**
-I first tried pure fixed-size chunking at 500 tokens with no overlap. When testing retrieval for "What is Newton's second law?", the retrieved chunk contained both the second and third law on the same page, diluting the answer. Reducing to 300 tokens with 50 overlap kept individual concepts together while maintaining enough context. The most important decision was keeping worked_examples whole — Example 4.3 (bus acceleration) had its problem statement and solution on the same page. Splitting them would have caused the LLM to receive only the problem without the solution, producing a wrong answer.
+### E2. The gap between me and a stronger student
 
----
+A stronger student would have caught the chunk_id format mismatch on Day 1
+by printing both formats side by side during the embedding step. I only
+found it during Stage 5 diagnosis. The lesson: always verify that IDs
+round-trip correctly between your chunker, vector store, and retriever
+before building anything on top.
 
-### A2. A Retrieved Chunk That Was Wrong
+### E3. Industry Pointer I'd explore in 6 months
 
-**Query:** "What is displacement and how is it different from distance?"
+**Eval-driven development** (Section 9). My Wk10 eval set was hand-built
+and biased toward questions I expected the system to answer. A production
+team adds a question every time a real user surfaces a failure. The eval
+set grows with the system. My first concrete step: instrument ask() to log
+every query and response to a CSV, then weekly review the worst-scoring
+responses and add them to the eval set. The eval becomes the moat.
 
-**Wrong chunk retrieved (Rank 1):**
-> "by drawing a velocity-time graph for its motion. 15. Two cars A and B start moving with a constant acceleration from rest in a straight line..."
-> Section: 4.4 Motion in a Plane | Page 23
+### E4. Two more days
 
-**Why the retriever returned it:**
-The word "displacement" appears in end-of-chapter questions across multiple pages including page 23, which also contains distance-related numerical problems. BM25 matched on surface keyword frequency — "distance", "motion", "straight line" — without understanding that this chunk is an exercise page, not a definition page. The correct definition chunk (4.1.2) was ranked third because its text was shorter and had lower term frequency scores.
+First: fix the chunk_id format consistency end-to-end and add a
+content_type=definition pass for section-opening sentences, then re-run
+the full eval — this addresses the Q1 refusal which is the most
+user-visible failure.
 
----
-
-### A3. Grounding Prompt — v1 and v_final
-
-**v1 (first attempt):**
-You are a helpful science tutor. Answer the student's question using the provided context.
-Only use information from the context below.
-Context: {context}
-Question: {question}
-
-**v_final:**
-You are a science study assistant for Class 9 students using NCERT textbooks.
-You will be given CONTEXT extracted from NCERT Class 9 Science chapters.
-Your job is to answer the student's question STRICTLY using only the provided context.
-STRICT RULES:
-
-If the answer is present in the context, answer clearly and simply for a Class 9 student.
-If the answer is NOT in the context, respond with exactly: "I'm sorry, this topic is not covered..."
-Do NOT use any outside knowledge, even if you know the answer.
-Do NOT make up formulas, definitions, or examples not present in the context.
-Keep answers concise — 3 to 5 sentences maximum.
-If a formula is in the context, include it in your answer.
-
-**What caused the revision:**
-The v1 prompt used "only use information from the context" which is permissive — the model interpreted it as "prefer the context but supplement if needed." When testing Q18 (Newton's law of gravitation), v1 produced a full answer even though the gravitation chapter was not in our corpus. Changing to an explicit REFUSAL instruction with an exact response string fixed this — all 5 out-of-scope questions were correctly refused with v_final.
-
----
-
-## Part B — Numbers from Evaluation
-
-### B1. Evaluation Scores
-
-- Total questions: 18
-- Correct: 11/13 answered questions
-- Partial: 2/13 (Q01 wrong retrieval, Q02 incomplete equations)
-- Grounded: 13/13 — every answered question was supported by retrieved chunks
-- Refusals appropriate: 5/5
-
-**Number that bothered me most: 2 partial scores on direct questions.**
-Q01 (displacement) and Q02 (kinematic equations) are the most basic questions in the corpus — they should have been easiest. Both failed due to retrieval, not generation. The LLM answered correctly from whatever context it received, but the retriever pulled the wrong chunks. This means a student asking the most fundamental question gets a worse answer than one asking a complex paraphrased question. That is backwards and indicates the retriever needs significant improvement.
-
-### B2. Chunk Size Experiment
-Not completed in this submission due to time constraints. Planned: compare 250 vs 500 token chunks on the same 18-question eval set. Expected outcome: 500 token chunks would hurt precision (multiple concepts per chunk) while 250 token chunks might lose context on worked examples.
-
-### B3. Model Family Comparison
-Not completed in this submission. Used Llama-3.1-8b-instant (decoder-only) via Groq as primary model. Planned comparison with flan-t5-small (encoder-decoder) noted for future work. Expected: flan-t5-small would struggle on multi-step reasoning questions due to its 77M parameter capacity limit.
-
----
-
-## Part C — Debugging Moments
-
-### C1. Most Frustrating Bug
-
-**Bug:** Gemini API kept returning truncated answers mid-sentence for Newton's law questions. The answer would stop at "the object" with no punctuation.
-
-**Time to fix:** ~45 minutes
-
-**What I tried first:** Rewrote the grounding prompt thinking the instruction length was causing issues. Made no difference.
-
-**Actual fix:** The `max_output_tokens` was set to 512 which was too low for detailed physics answers. Increasing to 1024 fixed it. The `finish_reason` was MAX_TOKENS not STOP — adding a warning check revealed this immediately.
-
-**Fastest path for someone hitting the same bug:** Always check `response.candidates[0].finish_reason.name` after generation. If it says MAX_TOKENS instead of STOP, double your token limit before touching anything else.
-
-### C2. What Still Bothers Me
-
-The retriever consistently fails on basic definitional queries. "What is displacement?" retrieves page 23 (exercise page) instead of page 3 (definition page). The word "displacement" appears 47 times across the corpus so BM25 cannot discriminate. This bothers me because a Class 9 student's first question is almost always a definition question — exactly the query type our system handles worst. Fixing this requires dense semantic retrieval (sentence-transformers) which is planned for the Advanced stage.
-
----
-
-## Part D — Architecture and Reasoning
-
-### D1. Why Not Just ChatGPT?
-
-When we tested Q18 — "Explain Newton's law of gravitation" — our system correctly refused because gravitation is not in our corpus. A raw ChatGPT call would have answered confidently from its training data. That sounds better, but it is not. PariShiksha's non-negotiable requirement is that answers stay grounded in NCERT content. A student who asks about gravitation should be told to refer to that chapter, not receive an answer that may use different notation or explanation level than their textbook. ChatGPT has no such constraint and would freely mix knowledge from multiple sources, making it impossible to verify whether the answer matches what the student's teacher will say.
-
-### D2. The GANs Reflection
-
-GANs are the wrong tool for this problem because they are designed for generation without grounding. A GAN generator learns to produce plausible-looking outputs that fool a discriminator — it has no mechanism to constrain generation to a specific source document. For PariShiksha, the core requirement is the opposite: we need a system that refuses to generate anything not supported by NCERT text. GANs optimize for plausibility, not faithfulness. The deeper principle is that generative architecture choice must match the fidelity requirement of the problem. When the problem demands "generate only from this specific source and refuse otherwise," you need retrieval-augmented generation with explicit grounding constraints — not adversarial generation.
-
-### D3. Honest Pilot Readiness
-
-**Honest answer: No, not Monday.**
-
-Three things I would fix first:
-
-1. **Retrieval quality** — 2 out of 13 answered questions failed due to retrieval pulling wrong chunks. A 15% retrieval failure rate means roughly 1 in 7 students gets a wrong or incomplete answer on basic questions. Dense retrieval using sentence-transformers must replace BM25 before any pilot.
-
-2. **Evaluation coverage** — My eval set has 18 questions, all written by me. Real students ask questions with spelling errors, Hindi-English code-switching, and half-remembered terms. At least 50 real student questions from the contract teacher are needed before launching.
-
-3. **No guardrails for adversarial input** — I tested clean out-of-scope questions but not prompt injection attempts or malformed inputs. A pilot with 100 students will surface these within the first day.
-
----
-
-## Part E — Effort and Self-Assessment
-
-### E1. Effort Rating
-
-**8/10**
-
-I am genuinely proud of the grounding prompt iteration — going from a permissive v1 that hallucinated on out-of-scope questions to a v_final that correctly refused all 5 out-of-scope queries. That required actually testing failure cases and tracing the root cause rather than assuming the prompt was fine.
-
-### E2. Gap Between Me and a Stronger Student
-
-A stronger student would have completed the dense retrieval comparison (Advanced stage). I planned to use sentence-transformers/all-MiniLM-L6-v2 alongside BM25 and compare scores on the same eval set. I did not complete it due to API rate limit issues consuming time that should have been spent on Advanced tasks. The rate limit problem was partly my fault — I did not read the free tier quotas before starting the evaluation loop.
-
-### E3. What Two More Days Would Change
-
-**First thing:** Replace BM25 with dense retrieval using sentence-transformers. This is the single highest-impact change — it would fix the retrieval failures on Q01 and Q02 and likely push correctness from 11/13 to 13/13.
-
-**Last thing:** Add teacher mode (Optional) — citations with page and section references on every answer. This is only valuable after the retrieval foundation is solid. Polishing output format before fixing retrieval would be the wrong priority order.
->>>>>>> Stashed changes
+Last: expand the corpus to 2 more NCERT chapters and re-run the OOS eval
+to check that refusal rate holds as in-scope content grows. Corpus
+coverage is the thing that determines whether the teacher trusts the
+system in a real demo, and right now 2 chapters is too narrow to ship.
